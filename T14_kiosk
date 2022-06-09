@@ -1,0 +1,647 @@
+import numpy as np
+from PyQt5 import QtGui
+from PyQt5 import uic
+from PyQt5.QtGui import QPalette, QBrush, QPixmap
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+import sys, cv2
+import pytesseract
+import re
+font_scale = 1.5
+font = cv2.FONT_HERSHEY_PLAIN
+from keras.models import load_model
+import sqlite3
+from datetime import datetime
+
+pytesseract.pytesseract.tesseract_cmd = R'C:\Program Files\Tesseract-OCR\tesseract'
+
+form_class = uic.loadUiType("main.ui")[0]
+form_liftDisplay = uic.loadUiType("lift.ui")[0]
+form_rentDisplay = uic.loadUiType("rent.ui")[0]
+form_payDisplay = uic.loadUiType("pay.ui")[0]
+sum = np.zeros(100, dtype=np.int32)
+flagl = '0'
+flag = '0'
+sale = 0
+t = 0
+
+real_name = ""
+real_num = ""
+info = "비회원"
+
+count_db = 1
+con = sqlite3.connect("Users.db")
+cursor = con.cursor()
+Ismember = False
+
+def membersearch(cursor, name, age):  # 회원인지 검색
+
+    cursor.execute("SELECT * FROM Member WHERE Name = ? AND age = ?", (name, age))
+
+    if len(cursor.fetchall()) == 1:
+        return True
+    elif len(cursor.fetchall()) == 0:
+        return False
+    else:
+        print("error")
+
+
+def salesearch(cursor, name, age):  # 이용한 할인 검색
+
+    cursor.execute("SELECT * FROM Sales WHERE Name = ? AND age = ?", (name, age))
+
+    if len(cursor.fetchall()) == 1:
+        return True
+    elif len(cursor.fetchall()) == 0:
+        return False
+    else:
+        print("error")
+
+
+def insert(cursor, count_db, name, age):  # 이용한 할인 등록
+    cursor.execute("SELECT MNo FROM Member WHERE Name = ? AND age = ?", (name, age))
+    Memnum = cursor.fetchone()
+    today = datetime.today()
+    date = today.strftime("%Y%m%d")
+    sale = ""  # 세일종류
+    cursor.execute("INSERT INTO Sales VALUES(?, ?, ?, ?, ?, ?)", (count_db, Memnum, name, age, date, sale))
+    count_db += 1
+
+
+class WindowClass(QMainWindow, form_class) :
+    def __init__(self) :
+        super().__init__()
+        self.initUI()
+        self.show()
+
+        self.btn_korean.clicked.connect(self.SelectK)
+        self.btn_english.clicked.connect(self.SelectE)
+
+    def initUI(self):
+        palette = QPalette()
+        palette.setBrush(QPalette.Background,QBrush(QPixmap("mainimg1.png")))
+        self.setPalette(palette)
+
+        self.setupUi(self)
+
+    def SelectK(self) :
+        self.close()  # 메인 윈도우 숨김
+        self.Example = Example()
+
+    def SelectE(self) :
+        self.close()  # 메인 윈도우 숨김
+
+
+class Example(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("현장 발권기")
+        self.resize(936, 610)
+        self.iniUI()
+
+    def iniUI(self):
+        palette = QPalette()
+        palette.setBrush(QPalette.Background, QBrush(QPixmap("mainimg2.png")))
+        self.setPalette(palette)
+
+        self.iframe = QLabel(self)
+        self.iframe.resize(591, 321)
+        self.iframe.setScaledContents(True)
+        self.iframe.move(190, 60)
+
+        self.btn_skip = QPushButton("건너뛰기", self)
+        self.btn_skip.setFont(QtGui.QFont("맑은 고딕", 9))
+        self.btn_skip.resize(121, 31)
+        self.btn_skip.move(740, 500)
+        self.btn_skip.clicked.connect(self.Skip)
+
+        self.prt = QLabel("고객님의 할인여부를 확인하겠습니다\n신분증을 화면에 보이게 가져다 대십시오\n(주민등록증, 운전면허증, 공무원증, 청소년증 가능)\n\n신분증 미소지 고객님이나 소인이신 고객님은 아래 버튼을 눌러주십시오", self)
+        self.prt.setFont(QtGui.QFont("맑은 고딕", 9))
+        self.prt.resize(491, 101)
+        self.prt.move(240, 400)
+        self.show()
+        self.start()
+
+
+    def start(self):
+        global sale
+        six_num = []
+        cap = cv2.VideoCapture(0)
+
+        model = load_model('IDCARD_cnn.h5.')
+
+        options = "--psm 4"
+        global real_num
+        global real_name
+        global info
+
+        cntr = 0
+        while True:
+            ret, frame = cap.read()
+            cntr += 1
+            if ((cntr % 20) == 0):
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = QImage(frame, frame.shape[1], frame.shape[0], QImage.Format_RGB888)
+                pix = QPixmap.fromImage(img)
+                self.iframe.setPixmap(pix)
+
+                imgH, imgW, _ = frame.shape
+                x1, y1, w1, h1 = 0, 0, imgH, imgW
+                imgchar = pytesseract.image_to_string(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), config=options, lang="kor")
+                imgboxes = pytesseract.image_to_boxes(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), config=options, lang="kor")
+                name = re.compile('[가-힣]+').findall(imgchar)
+                SSN = re.findall(r'\d+', imgchar)
+                for i in SSN:
+                    if len(i) == 6:
+                        real_num = i
+                        six_num.append(i)
+                        break
+                for i in name:
+                    if len(i) == 3:
+                        real_name = i
+                        break
+
+                resize_frame = cv2.resize(frame, (150, 150))
+                resize_frame = resize_frame[:, :, 0]
+                reshape_frame = resize_frame.reshape((1, 150, 150, 1))
+                y_pred = model.predict(reshape_frame, verbose=0)
+
+                if (y_pred[0] == 0):
+                    print("이름: " + real_name)
+                    if len(six_num) != 0:
+                        print("주민번호 앞자리: " + real_num)
+                    else:
+                        real_num = six_num[1]
+                        print("주민번호 앞자리: " + real_num)
+                    Ismember = membersearch(cursor, real_name, real_num)
+                    global sale
+                    if Ismember == True:
+                        info = '회원'
+                        sale = -50
+                        break
+                    elif Ismember == False:
+                        break
+
+                # print(imgchar)
+
+                if cv2.waitKey(2) & 0xFF == ord('q'):
+                    break
+
+        self.iframe.setPixmap(QPixmap.fromImage(QImage()))
+        self.liftDisplay = liftDisplay()
+        cap.release()
+        self.close()
+
+
+    def Skip(self):
+        cap = cv2.VideoCapture(0)
+        self.iframe.setPixmap(QPixmap.fromImage(QImage()))
+        self.liftDisplay = liftDisplay()
+        cap.release()
+        self.close()
+
+
+class liftDisplay(QMainWindow, form_liftDisplay) :
+    def __init__(self) :
+        super().__init__()
+        self.initUI()
+        QMessageBox.about(self, '고객정보', '이름 : {}({}) \n생년월일 : {}'.format(real_name, info, real_num) )
+        self.show()
+        self.setting()
+
+
+    def setting(self):
+        self.btn_2.clicked.connect(lambda: self.change('2l'))
+        self.btn_3.clicked.connect(lambda: self.change('3l'))
+        self.btn_4.clicked.connect(lambda: self.change('4l'))
+        self.btn_6.clicked.connect(lambda: self.change('6l'))
+
+        self.btn_s2.clicked.connect(lambda: self.change('s2l'))
+        self.btn_s3.clicked.connect(lambda: self.change('s3l'))
+        self.btn_s4.clicked.connect(lambda: self.change('s4l'))
+        self.btn_s6.clicked.connect(lambda: self.change('s6l'))
+
+        self.btn_next.clicked.connect(self.Next)
+
+
+    def initUI(self):
+        palette = QPalette()
+        palette.setBrush(QPalette.Background, QBrush(QPixmap("subimg2.png")))
+        self.setPalette(palette)
+
+        self.setupUi(self)
+
+        self.prt1 = QLabel(self)
+        self.prt1.resize(181, 31)
+        self.prt1.move(730, 420)
+        self.prt1.setFont(QtGui.QFont("맑은 고딕", 12, QFont.Bold))
+        self.prt1.setStyleSheet("Color : blue")
+        self.prt1.setText("{}%".format(abs(sale)))
+
+        self.prt2 = QLabel(self)
+        self.prt2.resize(181, 31)
+        self.prt2.move(730, 460)
+        self.prt2.setFont(QtGui.QFont("맑은 고딕",12, QFont.Bold))
+        self.prt2.setStyleSheet("Color : blue")
+        self.prt2.setText("{}원".format(sum[t]))
+
+
+    def decent(self, x):
+        global sum
+        if x == '2l':
+            self.btn_2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (55000*((sale+100)/100))
+        if x == '3l':
+            self.btn_3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (60000*((sale+100)/100))
+        if x == '4l':
+            self.btn_4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (65000*((sale+100)/100))
+        if x == '6l':
+            self.btn_6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (72000*((sale+100)/100))
+        if x == 's2l':
+            self.btn_s2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (40000*((sale+100)/100))
+        if x == 's3l':
+            self.btn_s3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (45000*((sale+100)/100))
+        if x == 's4l':
+            self.btn_s4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (47000*((sale+100)/100))
+        if x == 's6l':
+            self.btn_s6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (52000*((sale+100)/100))
+
+    def change(self, get) :
+        global sum
+        global flagl
+        global sale
+        if get == '2l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (55000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setDisabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flagl = '2l'
+        if get == '3l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (60000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setDisabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flagl = '3l'
+        if get == '4l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (65000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setDisabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flagl = '4l'
+        if get == '6l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (72000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setDisabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flagl = '6l'
+        if get == 's2l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (40000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setDisabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_s2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flagl = 's2l'
+        if get == 's3l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (45000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setDisabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_s3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flagl = 's3l'
+        if get == 's4l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (47000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setDisabled(True)
+            self.btn_s6.setEnabled(True)
+            self.btn_s4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flagl = 's4l'
+        if get == 's6l':
+            self.decent(flagl)
+            sum[t] = sum[t] + (52000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_2.setEnabled(True)
+            self.btn_3.setEnabled(True)
+            self.btn_4.setEnabled(True)
+            self.btn_6.setEnabled(True)
+            self.btn_s2.setEnabled(True)
+            self.btn_s3.setEnabled(True)
+            self.btn_s4.setEnabled(True)
+            self.btn_s6.setDisabled(True)
+            self.btn_s6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flagl = 's6l'
+
+    def Next(self) :
+        global flagl
+        flagl = '0'
+        self.rentDisplay = rentDisplay()
+        self.close()
+
+class rentDisplay(QMainWindow, form_rentDisplay) :
+    def __init__(self) :
+        super().__init__()
+        self.initUI()
+        self.show()
+        self.setting()
+
+    def setting(self):
+        self.btn_rent2.clicked.connect(lambda: self.change('2'))
+        self.btn_rent3.clicked.connect(lambda: self.change('3'))
+        self.btn_rent4.clicked.connect(lambda: self.change('4'))
+        self.btn_rent6.clicked.connect(lambda: self.change('6'))
+
+        self.btn_rents2.clicked.connect(lambda: self.change('s2'))
+        self.btn_rents3.clicked.connect(lambda: self.change('s3'))
+        self.btn_rents4.clicked.connect(lambda: self.change('s4'))
+        self.btn_rents6.clicked.connect(lambda: self.change('s6'))
+
+        self.btn_next.clicked.connect(self.Next)
+
+    def initUI(self):
+        palette = QPalette()
+        palette.setBrush(QPalette.Background, QBrush(QPixmap("subimg2.png")))
+        self.setPalette(palette)
+
+        self.setupUi(self)
+
+        self.prt1 = QLabel(self)
+        self.prt1.resize(181, 31)
+        self.prt1.move(730, 420)
+        self.prt1.setFont(QtGui.QFont("맑은 고딕", 12, QFont.Bold))
+        self.prt1.setStyleSheet("Color : blue")
+        self.prt1.setText("{}%".format(abs(sale)))
+
+        self.prt2 = QLabel(self)
+        self.prt2.resize(181, 31)
+        self.prt2.move(730, 460)
+        self.prt2.setFont(QtGui.QFont("맑은 고딕", 12, QFont.Bold))
+        self.prt2.setStyleSheet("Color : blue")
+        self.prt2.setText("{}원".format(sum[t]))
+
+    def decent(self, x):
+        global sum
+        if x == '2':
+            self.btn_rent2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (23000*((sale+100)/100))
+        if x == '3':
+            self.btn_rent3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (25000*((sale+100)/100))
+        if x == '4':
+            self.btn_rent4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (27000*((sale+100)/100))
+        if x == '6':
+            self.btn_rent6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(0, 0, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (30000*((sale+100)/100))
+        if x == 's2':
+            self.btn_rents2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (21000*((sale+100)/100))
+        if x == 's3':
+            self.btn_rents3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (22000*((sale+100)/100))
+        if x == 's4':
+            self.btn_rents4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (23000*((sale+100)/100))
+        if x == 's6':
+            self.btn_rents6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(85, 170, 255, 255)); border : 1px solid;")
+            sum[t] = sum[t] - (25000*((sale+100)/100))
+
+    def change(self, get) :
+        global sum
+        global flag
+        if get == '2':
+            self.decent(flag)
+            sum[t] = sum[t] + (23000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setDisabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rent2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flag = '2'
+        if get == '3':
+            self.decent(flag)
+            sum[t] = sum[t] + (25000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setDisabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rent3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flag = '3'
+        if get == '4':
+            self.decent(flag)
+            sum[t] = sum[t] + (27000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setDisabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rent4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flag = '4'
+        if get == '6':
+            self.decent(flag)
+            sum[t] = sum[t] + (30000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setDisabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rent6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 85, 0, 255)); border : 1px solid;")
+            flag = '6'
+        if get == 's2':
+            self.decent(flag)
+            sum[t] = sum[t] + (21000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setDisabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rents2.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flag = 's2'
+        if get == 's3':
+            self.decent(flag)
+            sum[t] = sum[t] + (22000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setDisabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rents3.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flag = 's3'
+        if get == 's4':
+            self.decent(flag)
+            sum[t] = sum[t] + (23000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setDisabled(True)
+            self.btn_rents6.setEnabled(True)
+            self.btn_rents4.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flag = 's4'
+        if get == 's6':
+            self.decent(flag)
+            sum[t] = sum[t] + (25000*((sale+100)/100))
+            self.prt2.setText("{}원".format(sum[t]))
+            self.btn_rent2.setEnabled(True)
+            self.btn_rent3.setEnabled(True)
+            self.btn_rent4.setEnabled(True)
+            self.btn_rent6.setEnabled(True)
+            self.btn_rents2.setEnabled(True)
+            self.btn_rents3.setEnabled(True)
+            self.btn_rents4.setEnabled(True)
+            self.btn_rents6.setDisabled(True)
+            self.btn_rents6.setStyleSheet("background-color: qradialgradient(spread:pad, cx:0.5, cy:0.5, radius:2, fx:0.500244, fy:0.5, stop:0 rgba(255, 255, 255, 255), stop:1 rgba(255, 255, 0, 255)); border : 1px solid;")
+            flag = 's6'
+
+    def Next(self) :
+        global flag
+        flag = '0'
+        self.payDisplay = payDisplay()
+        self.close()  # 메인 윈도우 숨김
+
+class payDisplay(QMainWindow, form_payDisplay) :
+    def __init__(self) :
+        super().__init__()
+        self.initUI()
+        self.show()
+
+        self.btn_pay.clicked.connect(self.pay)
+        self.btn_return.clicked.connect(self.home)
+
+    def initUI(self):
+        palette = QPalette()
+        palette.setBrush(QPalette.Background, QBrush(QPixmap("payimg1.jpg")))
+        self.setPalette(palette)
+
+        self.setupUi(self)
+
+        self.prt1 = QLabel(self)
+        self.prt1.resize(181, 31)
+        self.prt1.move(660, 380)
+        self.prt1.setFont(QtGui.QFont("맑은 고딕", 12, QFont.Bold))
+        self.prt1.setStyleSheet("Color : blue")
+        self.prt1.setText("{}명".format(t+1))
+
+        self.prt1 = QLabel(self)
+        self.prt1.resize(181, 31)
+        self.prt1.move(660, 420)
+        self.prt1.setFont(QtGui.QFont("맑은 고딕", 12, QFont.Bold))
+        self.prt1.setStyleSheet("Color : blue")
+        self.prt1.setText("{}원".format(np.sum(sum)))
+
+    def pay(self) :
+        self.close()  # 메인 윈도우 숨김
+
+    def home(self) :
+        global t
+        global sale
+        global real_num
+        global real_name
+        global info
+        
+        real_name = ""
+        real_num = ""
+        info = '비회원'
+
+        t = t + 1
+        sale = 0
+        self.close()  # 메인 윈도우 숨김
+        self.Example = Example()
+
+
+if __name__ == "__main__" :
+    #QApplication : 프로그램을 실행시켜주는 클래스
+    app = QApplication(sys.argv)
+    #WindowClass의 인스턴스 생성
+    myWindow = WindowClass()
+    #프로그램 화면을 보여주는 코드
+    myWindow.show()
+    #프로그램을 이벤트루프로 진입시키는(프로그램을 작동시키는) 코드
+    app.exec_()
